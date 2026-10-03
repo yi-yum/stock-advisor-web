@@ -101,7 +101,13 @@ interface TrackerPosition {
   sl: number | null
   current_sl: number | null
   current_price: number
-  current_pnl_pct: number
+  current_pnl_pct: number | null
+  entry_pending?: boolean
+  exit_pending?: boolean
+  exit_pending_reason?: string
+  exit_signal_price?: number
+  signal_price?: number
+  entry_fill_date?: string
   last_updated: string
   green_count?: number
   chart_pattern?: string
@@ -152,7 +158,18 @@ interface MonthlyStat {
   total_pnl: number
 }
 
+interface CombinedStats {
+  count: number; wins: number; losses: number; flat: number
+  win_rate: number | null; avg_pnl: number | null; total_pnl: number | null
+  realized_count: number; open_count: number
+  best?: { symbol: string; pnl_pct: number; closed: boolean }
+  worst?: { symbol: string; pnl_pct: number; closed: boolean }
+}
+
 interface TrackerSummary {
+  combined?: CombinedStats
+  by_market?: Record<string, { combined: CombinedStats; realized: CombinedStats; unrealized: CombinedStats }>
+  timing_stats_all?: Record<string, CombinedStats>
   total_closed: number
   win_rate: number | null
   avg_pnl_pct: number | null
@@ -177,6 +194,29 @@ const formatTime = (iso: string | null | undefined) => {
 
 const pnlColor = (v: number) => v > 0 ? 'text-green-400' : v < 0 ? 'text-red-400' : 'text-gray-400'
 const pnlPrefix = (v: number) => v > 0 ? '+' : ''
+const fmtPnl = (v: number | null | undefined) =>
+  v == null ? '—' : `${pnlPrefix(v)}${v}%`
+
+interface MarketRow { label: string; c: CombinedStats; realizedAvg: number | null; realizedN: number | null; unrealizedAvg: number | null; unrealizedN: number | null }
+
+function marketRows(sm: TrackerSummary): MarketRow[] {
+  const rows: MarketRow[] = []
+  if (sm.combined) {
+    rows.push({
+      label: '全部', c: sm.combined,
+      realizedAvg: sm.avg_pnl_pct, realizedN: sm.total_closed,
+      unrealizedAvg: sm.open_unrealized_pct, unrealizedN: sm.combined.open_count,
+    })
+  }
+  for (const [mk, v] of Object.entries(sm.by_market ?? {})) {
+    rows.push({
+      label: mk === 'tw' ? '台股' : mk === 'us' ? '美股' : mk, c: v.combined,
+      realizedAvg: v.realized.avg_pnl, realizedN: v.realized.count,
+      unrealizedAvg: v.unrealized.avg_pnl, unrealizedN: v.unrealized.count,
+    })
+  }
+  return rows
+}
 
 const SignalBadge = ({ signal }: { signal: string }) => {
   if (signal === 'BUY') return <span className="px-2 py-0.5 rounded text-xs font-bold bg-green-900 text-green-300">買入</span>
@@ -1009,15 +1049,86 @@ export default function ScannerPage() {
                 <div className="text-2xl font-bold text-white">{trackerSummary.total_closed}</div>
               </div>
               <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-                <div className="text-gray-400 text-xs mb-1">勝率</div>
-                <div className="text-2xl font-bold text-white">{trackerSummary.win_rate != null ? `${trackerSummary.win_rate}%` : '—'}</div>
+                <div className="text-gray-400 text-xs mb-1">勝率（含未實現）</div>
+                <div className="text-2xl font-bold text-white">{trackerSummary.combined?.win_rate != null ? `${trackerSummary.combined.win_rate}%` : '—'}</div>
+                <div className="text-gray-500 text-xs mt-1">已實現 {trackerSummary.win_rate != null ? `${trackerSummary.win_rate}%` : '—'}</div>
               </div>
               <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-                <div className="text-gray-400 text-xs mb-1">平均損益</div>
-                <div className={`text-2xl font-bold ${trackerSummary.avg_pnl_pct != null ? pnlColor(trackerSummary.avg_pnl_pct) : 'text-white'}`}>
-                  {trackerSummary.avg_pnl_pct != null ? `${pnlPrefix(trackerSummary.avg_pnl_pct)}${trackerSummary.avg_pnl_pct}%` : '—'}
+                <div className="text-gray-400 text-xs mb-1">平均損益（含未實現）</div>
+                <div className={`text-2xl font-bold ${trackerSummary.combined?.avg_pnl != null ? pnlColor(trackerSummary.combined.avg_pnl) : 'text-white'}`}>
+                  {trackerSummary.combined?.avg_pnl != null ? `${pnlPrefix(trackerSummary.combined.avg_pnl)}${trackerSummary.combined.avg_pnl}%` : '—'}
                 </div>
+                <div className="text-gray-500 text-xs mt-1">已實現 {trackerSummary.avg_pnl_pct != null ? `${pnlPrefix(trackerSummary.avg_pnl_pct)}${trackerSummary.avg_pnl_pct}%` : '—'}</div>
               </div>
+            </div>
+          )}
+
+          {/* 含未實現（盯市）對照：已平倉只會是「停損出場的虧損單」，獲利單續抱不平倉，單看已實現會系統性偏差 */}
+          {trackerSummary?.combined && trackerSummary.combined.count > 0 && (
+            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700 mb-6 text-xs">
+              <div className="flex items-baseline gap-2 flex-wrap mb-3">
+                <span className="font-medium text-gray-200 text-sm">含未實現績效（盯市）</span>
+                <span className="text-gray-500">已平倉僅含停損出場的虧損單，獲利單續抱不會平倉，故單看已實現會偏向虧損。損益以「訊號次日開盤價」進場、「出場訊號次日開盤價」出場，並已扣來回成本（台股 0.585%、美股 0.1%）；待進場部位與平盤不計入勝率</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="text-gray-500 border-b border-gray-700">
+                      <th className="py-1.5 pr-3 font-normal">範圍</th>
+                      <th className="py-1.5 pr-3 font-normal">筆數</th>
+                      <th className="py-1.5 pr-3 font-normal">賺 / 賠 / 平</th>
+                      <th className="py-1.5 pr-3 font-normal">勝率</th>
+                      <th className="py-1.5 pr-3 font-normal">平均損益</th>
+                      <th className="py-1.5 pr-3 font-normal">已實現均</th>
+                      <th className="py-1.5 font-normal">未實現均</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {marketRows(trackerSummary).map(row => (
+                      <tr key={row.label} className="border-b border-gray-800 last:border-0">
+                        <td className="py-1.5 pr-3 text-gray-200">{row.label}</td>
+                        <td className="py-1.5 pr-3 text-white">{row.c.count}（持倉 {row.c.open_count}）</td>
+                        <td className="py-1.5 pr-3"><span className="text-green-400">{row.c.wins}</span> / <span className="text-red-400">{row.c.losses}</span> / <span className="text-gray-400">{row.c.flat}</span></td>
+                        <td className="py-1.5 pr-3 text-white">{row.c.win_rate != null ? `${row.c.win_rate}%` : '—'}</td>
+                        <td className={`py-1.5 pr-3 font-medium ${pnlColor(row.c.avg_pnl ?? 0)}`}>{fmtPnl(row.c.avg_pnl)}</td>
+                        <td className={`py-1.5 pr-3 ${pnlColor(row.realizedAvg ?? 0)}`}>{fmtPnl(row.realizedAvg)}{row.realizedN != null ? `（${row.realizedN}）` : ''}</td>
+                        <td className={`py-1.5 ${pnlColor(row.unrealizedAvg ?? 0)}`}>{fmtPnl(row.unrealizedAvg)}{row.unrealizedN != null ? `（${row.unrealizedN}）` : ''}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {trackerSummary.timing_stats_all && Object.keys(trackerSummary.timing_stats_all).length > 0 && (
+                <div className="mt-4">
+                  <div className="text-gray-400 mb-1.5">依 Claude 進場時機（含持倉）</div>
+                  <div className="flex flex-wrap gap-2">
+                    {(['🟢', '🟡', '🔴'] as const).filter(t => trackerSummary.timing_stats_all?.[t]).map(t => {
+                      const c = trackerSummary.timing_stats_all![t]!
+                      return (
+                        <div key={t} className="bg-gray-900/60 rounded-lg px-3 py-2">
+                          <span className="mr-2">{t}</span>
+                          <span className="text-gray-400">{c.count} 筆 · 勝率 </span>
+                          <span className="text-white">{c.win_rate != null ? `${c.win_rate}%` : '—'}</span>
+                          <span className="text-gray-400"> · 均 </span>
+                          <span className={pnlColor(c.avg_pnl ?? 0)}>{fmtPnl(c.avg_pnl)}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {(trackerSummary.combined.best || trackerSummary.combined.worst) && (
+                <div className="mt-3 text-gray-400">
+                  {trackerSummary.combined.best && (
+                    <span>最佳：<span className="text-white">{trackerSummary.combined.best.symbol}</span> <span className={pnlColor(trackerSummary.combined.best.pnl_pct)}>{fmtPnl(trackerSummary.combined.best.pnl_pct)}</span>{trackerSummary.combined.best.closed ? '' : '（持倉中）'}　</span>
+                  )}
+                  {trackerSummary.combined.worst && (
+                    <span>最差：<span className="text-white">{trackerSummary.combined.worst.symbol}</span> <span className={pnlColor(trackerSummary.combined.worst.pnl_pct)}>{fmtPnl(trackerSummary.combined.worst.pnl_pct)}</span>{trackerSummary.combined.worst.closed ? '' : '（持倉中）'}</span>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -1031,7 +1142,7 @@ export default function ScannerPage() {
               </div>
               {trackerSummary.best_trade && (
                 <div className="bg-gray-800 rounded-lg p-4 border border-green-800 text-xs space-y-1">
-                  <div className="font-medium text-green-400 mb-2">最佳交易</div>
+                  <div className="font-medium text-green-400 mb-2">已實現最佳交易</div>
                   <div className="text-white font-bold">{trackerSummary.best_trade.symbol}</div>
                   <div className={`text-lg font-bold ${pnlColor(trackerSummary.best_trade.pnl_pct)}`}>{pnlPrefix(trackerSummary.best_trade.pnl_pct)}{trackerSummary.best_trade.pnl_pct}%</div>
                   <div className="text-gray-400">{trackerSummary.best_trade.exit_date}</div>
@@ -1039,7 +1150,7 @@ export default function ScannerPage() {
               )}
               {trackerSummary.worst_trade && (
                 <div className="bg-gray-800 rounded-lg p-4 border border-red-800 text-xs space-y-1">
-                  <div className="font-medium text-red-400 mb-2">最差交易</div>
+                  <div className="font-medium text-red-400 mb-2">已實現最差交易</div>
                   <div className="text-white font-bold">{trackerSummary.worst_trade.symbol}</div>
                   <div className={`text-lg font-bold ${pnlColor(trackerSummary.worst_trade.pnl_pct)}`}>{pnlPrefix(trackerSummary.worst_trade.pnl_pct)}{trackerSummary.worst_trade.pnl_pct}%</div>
                   <div className="text-gray-400">{trackerSummary.worst_trade.exit_date}</div>
@@ -1072,14 +1183,33 @@ export default function ScannerPage() {
                           {pos.green_count === 2 && (
                             <span className="px-2 py-0.5 bg-yellow-900/60 text-yellow-300 rounded text-xs border border-yellow-700 animate-pulse">⚠️ ST 警戒</span>
                           )}
+                          {pos.exit_pending && (
+                            <span className="px-2 py-0.5 bg-orange-900/50 text-orange-300 rounded text-xs border border-orange-800" title={pos.exit_pending_reason}>
+                              ⏳ 待次日開盤出場（{pos.exit_pending_reason}）
+                            </span>
+                          )}
                           {pos.chart_pattern && <span className="px-2 py-0.5 bg-purple-900/50 text-purple-300 rounded text-xs border border-purple-800">{pos.chart_pattern}</span>}
                         </div>
                         <div className="flex items-center gap-4 flex-wrap text-sm">
-                          <span className="text-gray-400">進場：<span className="text-white font-medium">{pos.entry_price}</span></span>
-                          <span className="text-gray-400">現價：<span className="text-white font-medium">{pos.current_price}</span></span>
-                          <span className={`font-bold text-base ${pnlColor(pos.current_pnl_pct)}`}>
-                            {pnlPrefix(pos.current_pnl_pct)}{pos.current_pnl_pct}%
-                          </span>
+                          {pos.entry_pending ? (
+                            <>
+                              <span className="text-gray-400">訊號價：<span className="text-white font-medium">{pos.entry_price}</span></span>
+                              <span className="px-2 py-0.5 bg-blue-900/50 text-blue-300 rounded text-xs border border-blue-800">⏳ 待次日開盤進場（暫不計入績效）</span>
+                            </>
+                          ) : (
+                            <>
+                              <span className="text-gray-400" title={pos.signal_price != null ? `訊號日收盤 ${pos.signal_price}` : undefined}>
+                                進場（次日開盤）：<span className="text-white font-medium">{pos.entry_price}</span>
+                                {pos.signal_price != null && pos.signal_price !== pos.entry_price && (
+                                  <span className="text-gray-500 text-xs ml-1">（訊號價 {pos.signal_price}）</span>
+                                )}
+                              </span>
+                              <span className="text-gray-400">現價：<span className="text-white font-medium">{pos.current_price}</span></span>
+                              <span className={`font-bold text-base ${pnlColor(pos.current_pnl_pct ?? 0)}`}>
+                                {pos.current_pnl_pct != null ? `${pnlPrefix(pos.current_pnl_pct)}${pos.current_pnl_pct}%` : '—'}
+                              </span>
+                            </>
+                          )}
                         </div>
                         <div className="flex items-center gap-3 mt-1 text-xs text-gray-400 flex-wrap">
                           <span>進場日：{pos.entry_date} <span className="text-gray-500">({Math.floor((Date.now() - new Date(pos.entry_date).getTime()) / 86400000)} 天)</span></span>
