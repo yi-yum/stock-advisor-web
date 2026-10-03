@@ -420,17 +420,15 @@ export default function ScannerPage() {
           allStocks.slice(0, 30).forEach((st: any) => hotCodes.add(st.code))
         }
 
-        // 每日掃描只用三重ST策略，所有 BUY 訊號的 trend_score/entry_score 都相同
-        // （BUY 定義本身就是「三條全翻多」），無法用來區分好壞。改用 Claude 分析
-        // 解析出的進場時機（🟢立即進場 > 🟡等回踩 > 🔴觀望）當主要排序依據，
-        // 這是實際看過支撐壓力/RSI/量能之後的判斷，比固定分數更有意義。
+        // 所有 BUY 的 trend/entry score 都相同，無法區分好壞。
+        // Claude 燈號（🟢🟡🔴）的追蹤資料顯示無鑑別力，不納入排序；
+        // 僅以籌碼共振(+5)、WATCH 升級(+2)、財報將近(-3) 微調，其餘同分維持原順序。
         const build = (data: any, m: 'tw' | 'us'): TopCandidate[] =>
           (data?.results ?? [])
             .filter((r: any) => r.signal === 'BUY')
             .map((r: any) => {
               const resonance = m === 'tw' && hotCodes.has(r.symbol)
               const timing = getEntryTiming(r.claude_analysis)
-              const timingScore = timing === '🟢' ? 30 : timing === '🟡' ? 20 : timing === '🔴' ? 10 : 0
               const upgraded = isUpgradedFromWatch(r.signal_history ?? [])
               return {
                 market: m,
@@ -440,7 +438,7 @@ export default function ScannerPage() {
                 close: r.close,
                 change_pct: r.change_pct,
                 signal_label: r.signal_label,
-                score: timingScore + (resonance ? 5 : 0) + (upgraded ? 2 : 0) + (r.earnings_soon ? -3 : 0),
+                score: (resonance ? 5 : 0) + (upgraded ? 2 : 0) + (r.earnings_soon ? -3 : 0),
                 resonance,
                 timing,
                 upgraded,
@@ -633,7 +631,7 @@ export default function ScannerPage() {
                         {c.change_pct > 0 ? '+' : ''}{c.change_pct}%
                       </span>
                       <span className="text-xs">
-                        {c.timing ? <EntryTimingBadge timing={c.timing} /> : <span className="text-gray-500">分析中</span>}
+                        {c.timing ? <EntryTimingBadge timing={c.timing} /> : <span className="text-gray-500">—</span>}
                       </span>
                     </div>
                   </button>
