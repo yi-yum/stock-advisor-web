@@ -100,6 +100,11 @@ export async function fetchCryptoSignalHistory(): Promise<any> {
   return res.data
 }
 
+export async function fetchCryptoTracker(limit: number = 100): Promise<any> {
+  const res = await api.get('/api/crypto/tracker', { params: { limit } })
+  return res.data
+}
+
 // ── 掃描歷史紀錄 ──────────────────────────────────────
 export async function fetchScanHistoryList(): Promise<any> {
   const res = await api.get('/api/scan-history')

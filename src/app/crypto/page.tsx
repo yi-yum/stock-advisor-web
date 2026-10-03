@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { RefreshCw, Clock } from 'lucide-react'
-import { fetchCryptoStrategyChart, fetchCryptoStrategyStatus, fetchCryptoSignalHistory } from '@/lib/api'
+import { fetchCryptoStrategyChart, fetchCryptoStrategyStatus, fetchCryptoSignalHistory, fetchCryptoTracker } from '@/lib/api'
 
 // ── 幣種設定 ──────────────────────────────────────────
 const COINS = [
@@ -342,6 +342,168 @@ function SignalHistoryPanel({ history, lastChecked }: {
   )
 }
 
+// ── 持倉追蹤面板 ──────────────────────────────────────
+interface CryptoAddOn { level: number; label: string; price: number; weight_pct: number; new_stop: number; new_stop_label: string }
+interface CryptoOpenPos {
+  symbol: string; strategy: string; side: 'LONG' | 'SHORT'
+  entry_time: string; entry_price: number; entry_reason: string
+  sl: number | null; tp: number | null; add_on_levels: CryptoAddOn[]
+  current_price: number; current_pnl_pct: number
+}
+interface CryptoClosedPos {
+  symbol: string; strategy: string; side: string
+  entry_time: string; entry_price: number; exit_time: string; exit_price: number
+  pnl_pct: number; exit_reason: string; holding_hours: number
+}
+interface CryptoStats { trades: number; win_rate: number | null; avg_pnl: number | null; total_pnl: number | null; avg_hours: number | null }
+interface CryptoTrackerData {
+  open: CryptoOpenPos[]
+  closed: CryptoClosedPos[]
+  summary: {
+    overall: CryptoStats
+    by_strategy: Record<string, CryptoStats>
+    by_symbol: Record<string, CryptoStats>
+    open_count: number
+    open_unrealized_avg: number | null
+  }
+}
+
+const pnlCls = (v: number | null | undefined) =>
+  v == null ? 'text-gray-400' : v > 0 ? 'text-green-400' : v < 0 ? 'text-red-400' : 'text-gray-400'
+const pnlTxt = (v: number | null | undefined) =>
+  v == null ? '—' : `${v > 0 ? '+' : ''}${v}%`
+
+function CryptoTrackerPanel() {
+  const [data, setData] = useState<CryptoTrackerData | null>(null)
+  const [showClosed, setShowClosed] = useState(false)
+
+  useEffect(() => {
+    const load = () => fetchCryptoTracker(100).then(setData).catch(() => {})
+    load()
+    const t = setInterval(load, 5 * 60 * 1000)
+    return () => clearInterval(t)
+  }, [])
+
+  if (!data) return null
+  const { open, closed, summary } = data
+  const ov = summary.overall
+  const strategies = Object.entries(summary.by_strategy)
+
+  return (
+    <div className="border border-gray-700 rounded-xl overflow-hidden">
+      <div className="px-4 py-3 bg-gray-800 flex items-center gap-2 flex-wrap">
+        <span className="font-semibold text-sm text-gray-200">📊 持倉追蹤（實際運行紀錄）</span>
+        <span className="text-xs text-gray-500">每小時檢查；損益已扣往返手續費 0.1%；僅記錄後端運行期間的新訊號</span>
+      </div>
+
+      <div className="p-4 space-y-4">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+          <div className="bg-gray-800 rounded-lg p-3">
+            <div className="text-xs text-gray-500">持倉中</div>
+            <div className="text-lg font-bold text-white">{summary.open_count}</div>
+            <div className={`text-xs ${pnlCls(summary.open_unrealized_avg)}`}>未實現均 {pnlTxt(summary.open_unrealized_avg)}</div>
+          </div>
+          <div className="bg-gray-800 rounded-lg p-3">
+            <div className="text-xs text-gray-500">已平倉</div>
+            <div className="text-lg font-bold text-white">{ov.trades}</div>
+            <div className="text-xs text-gray-500">均持有 {ov.avg_hours ?? '—'}h</div>
+          </div>
+          <div className="bg-gray-800 rounded-lg p-3">
+            <div className="text-xs text-gray-500">勝率</div>
+            <div className="text-lg font-bold text-white">{ov.win_rate != null ? `${ov.win_rate}%` : '—'}</div>
+          </div>
+          <div className="bg-gray-800 rounded-lg p-3">
+            <div className="text-xs text-gray-500">平均損益</div>
+            <div className={`text-lg font-bold ${pnlCls(ov.avg_pnl)}`}>{pnlTxt(ov.avg_pnl)}</div>
+            <div className={`text-xs ${pnlCls(ov.total_pnl)}`}>累計 {pnlTxt(ov.total_pnl)}</div>
+          </div>
+        </div>
+
+        {open.length === 0 ? (
+          <div className="text-center text-gray-600 text-sm py-3">目前沒有追蹤中的持倉（出現新進場訊號時會自動開倉記錄）</div>
+        ) : (
+          <div className="space-y-2">
+            {open.map(p => (
+              <div key={p.symbol} className="bg-gray-800 border border-gray-700 rounded-lg p-3">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-bold text-white">{p.symbol.replace('USDT', '')}</span>
+                  <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${STRAT_COLOR[p.strategy] ?? 'text-gray-400 bg-gray-700'}`}>{p.strategy}</span>
+                  <span className={`text-xs font-bold ${p.side === 'LONG' ? 'text-green-400' : 'text-purple-400'}`}>{p.side}</span>
+                  <span className={`ml-auto font-bold ${pnlCls(p.current_pnl_pct)}`}>{pnlTxt(p.current_pnl_pct)}</span>
+                </div>
+                <div className="flex items-center gap-4 flex-wrap text-xs text-gray-400 mt-1">
+                  <span>進場 <span className="text-white">${fmtPrice(p.entry_price)}</span></span>
+                  <span>現價 <span className="text-white">${fmtPrice(p.current_price)}</span></span>
+                  <span>止損 <span className="text-red-400">{p.sl != null ? `$${fmtPrice(p.sl)}` : '—'}</span></span>
+                  {p.tp != null && <span>止盈 <span className="text-green-400">${fmtPrice(p.tp)}</span></span>}
+                  <span>{holdDuration(p.entry_time) ?? ''}</span>
+                </div>
+                {p.add_on_levels.length > 0 && (
+                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                    <span className="text-xs text-gray-500">加碼計畫：</span>
+                    {p.add_on_levels.map(lv => {
+                      const reached = p.current_price >= lv.price
+                      return (
+                        <span
+                          key={lv.level}
+                          title={`${lv.new_stop_label}：${lv.new_stop}`}
+                          className={`text-xs px-2 py-0.5 rounded border ${reached ? 'bg-amber-900/50 text-amber-300 border-amber-700' : 'bg-gray-700/50 text-gray-500 border-gray-700'}`}
+                        >
+                          {reached ? '✅ ' : ''}{lv.label} ${fmtPrice(lv.price)}（{lv.weight_pct}%）
+                        </span>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {strategies.length > 0 && (
+          <div>
+            <div className="text-xs text-gray-500 mb-1">分策略績效</div>
+            <div className="flex flex-wrap gap-2">
+              {strategies.map(([name, st]) => (
+                <div key={name} className="bg-gray-800 rounded-lg px-3 py-2 text-xs">
+                  <span className={`font-medium px-1.5 py-0.5 rounded ${STRAT_COLOR[name] ?? 'text-gray-400 bg-gray-700'}`}>{name}</span>
+                  <span className="ml-2 text-gray-400">{st.trades} 筆 · 勝率 {st.win_rate}% · 均 </span>
+                  <span className={pnlCls(st.avg_pnl)}>{pnlTxt(st.avg_pnl)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {closed.length > 0 && (
+          <div>
+            <button onClick={() => setShowClosed(v => !v)} className="text-xs text-gray-400 hover:text-white">
+              {showClosed ? '▲ 收起' : '▼ 展開'} 已平倉紀錄（{closed.length}）
+            </button>
+            {showClosed && (
+              <div className="mt-2 divide-y divide-gray-800 border border-gray-800 rounded-lg">
+                {closed.map((c, i) => (
+                  <div key={i} className="px-3 py-2 flex items-center justify-between text-xs">
+                    <div>
+                      <span className="font-semibold text-white">{c.symbol.replace('USDT', '')}</span>
+                      <span className="ml-1.5 text-gray-500">{c.strategy} {c.side}</span>
+                      <span className="ml-2 text-gray-600">{c.exit_reason} · {c.holding_hours}h</span>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-gray-500 mr-2">${fmtPrice(c.entry_price)} → ${fmtPrice(c.exit_price)}</span>
+                      <span className={`font-bold ${pnlCls(c.pnl_pct)}`}>{pnlTxt(c.pnl_pct)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function StrategyCard({ s, coin, holdSince }: { s: StrategyStatus; coin: typeof COINS[0] | undefined; holdSince?: string | null }) {
   const isEntry = s.signal === 'LONG'
   const isShort = s.signal === 'SHORT'
@@ -667,6 +829,8 @@ function PerCoinSignalsPanel() {
           ))}
         </div>
       )}
+
+      <CryptoTrackerPanel />
 
       <SignalHistoryPanel history={historyData.history} lastChecked={historyData.last_checked} />
     </div>
