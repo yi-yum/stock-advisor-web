@@ -799,7 +799,7 @@ function PerCoinSignalsPanel() {
 
       <div className="flex items-center justify-between">
         <div className="text-xs text-gray-600 space-y-0.5">
-          <p>各幣種最佳化策略即時訊號 · 每 1 小時自動刷新</p>
+          <p>各幣種策略即時訊號 · 每 1 小時自動刷新</p>
           <p>🟢 進場 = 條件剛觸發 · <span className="text-blue-500/70">持倉</span> = 訊號維持中 · 🔴 出場 = 考慮平倉 · <span className="text-gray-500">等待</span> = 條件未達</p>
         </div>
         <div className="flex items-center gap-2">
@@ -845,7 +845,12 @@ export default function CryptoPage() {
       <div>
         <h1 className="text-3xl font-bold">🪙 加密貨幣訊號</h1>
         <p className="text-gray-400 text-sm mt-1">
-          各幣種最佳化策略 · VB / 三重 ST / EMA Cross / Donchian
+          各幣種策略 · VB / 三重 ST / EMA Cross / Donchian
+        </p>
+        <p className="text-xs text-amber-500/80 mt-2 max-w-3xl">
+          ⚠ 各幣種的策略與參數是以 2023–2026 全期回測挑選（樣本內），尚未經樣本外確認。
+          樣本外檢驗顯示：趨勢策略的價值主要是空頭時降低回撤，多頭時通常不及直接持有；
+          高勝率、低回撤的回測數字（例如 BTC 的 VB）有過度擬合成分。訊號僅供參考。
         </p>
       </div>
       <PerCoinSignalsPanel />
